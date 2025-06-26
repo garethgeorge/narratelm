@@ -1,0 +1,5 @@
+ebooklib
+google-genai
+click
+beautifulsoup4
+ollama
