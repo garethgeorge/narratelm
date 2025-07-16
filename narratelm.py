@@ -16,9 +16,14 @@ from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
 import subprocess
+import concurrent.futures
+import os
+
 
 # --- Constants ---
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
+# TTS_VOICE = "Umbrial"
+# TTS_VOICE = "Iapetus"
 TTS_VOICE = "Enceladus"
 AUDIO_BITRATE = "96k"
 TTS_PROMPT = (
@@ -27,7 +32,7 @@ TTS_PROMPT = (
     "different intonations for different characters:\n\n"
 )
 MIN_CHAPTER_LENGTH = 100
-DEFAULT_MAX_CHARS = 8000
+DEFAULT_MAX_CHARS = 16000
 
 
 # --- Helper Functions ---
@@ -94,9 +99,22 @@ def get_chapters_from_epub(epub_path: str) -> List[Tuple[str, str]]:
         click.echo(f"Error reading EPUB file: {e}", err=True)
         sys.exit(1)
 
+    chapter_items = []
+
+    if book.spine:
+        click.echo(f"Found and using book.spine: {book.spine}")
+        chapters_in_order = []
+        for item_id, _ in book.spine:
+            item = book.get_item_with_id(item_id)
+            if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                chapter_items.append(item)
+    else:
+        for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+            chapter_items.append(item)
+
     chapters = []
     chapter_num = 1
-    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+    for item in chapter_items:
         text_content = extract_text_from_html(item.get_content())
 
         if len(text_content) < MIN_CHAPTER_LENGTH:
@@ -180,6 +198,173 @@ def split_text_into_chunks(text: str, max_chars: int) -> List[str]:
     return chunks
 
 
+def get_audio_duration(file_path: str) -> float:
+    """Get the duration of an audio file in seconds using ffprobe."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return float(result.stdout.strip())
+    except FileNotFoundError:
+        click.echo("Error: ffprobe is not installed or not found in PATH", err=True)
+        return 0.0
+    except (subprocess.CalledProcessError, ValueError) as e:
+        click.echo(f"Error getting duration for {file_path}: {e}", err=True)
+        return 0.0
+
+
+def extract_cover_image(book: epub.EpubBook, output_dir: Path) -> Optional[Path]:
+    """Extracts the cover image from the EPUB and saves it to a file."""
+    cover_item = None
+
+    # 1. Try to find cover image from metadata (most reliable for EPUB2/3)
+    try:
+        cover_meta = book.get_metadata("OPF", "cover")
+        if cover_meta:
+            cover_id = cover_meta[0][1].get("content")
+            if cover_id:
+                cover_item = book.get_item_with_id(cover_id)
+    except (IndexError, KeyError):
+        pass  # Metadata not found or malformed
+
+    # 2. If not found, look for an item with type ITEM_COVER
+    if not cover_item:
+        covers = list(book.get_items_of_type(ebooklib.ITEM_COVER))
+        if covers:
+            cover_item = covers[0]
+
+    # 3. Fallback: Look for common filenames in all image items
+    if not cover_item:
+        for item in book.get_items_of_type(ebooklib.ITEM_IMAGE):
+            if "cover" in item.get_name().lower():
+                cover_item = item
+                break
+
+    if cover_item:
+        cover_data = cover_item.get_content()
+        cover_ext = Path(cover_item.get_name()).suffix or ".jpg"
+        cover_path = output_dir / f"cover{cover_ext}"
+        with open(cover_path, "wb") as f:
+            f.write(cover_data)
+        click.echo(f"  \u2713 Extracted cover image to {cover_path}")
+        return cover_path
+
+    click.echo("  \u2718 Could not find a cover image in the EPUB.")
+    return None
+
+
+def merge_audio_files(
+    m4a_files: List[str],
+    output_path: Path,
+    epub_path: Path,
+    chapters: List[Tuple[str, str]],
+):
+    """
+    Merges M4A files into a single file with chapters and cover art.
+    """
+    click.echo("Starting final merge process...")
+
+    # 1. Create file list for ffmpeg concat
+    file_list_path = output_path.parent / "ffmpeg_file_list.txt"
+    with open(file_list_path, "w") as f:
+        for m4a_file in m4a_files:
+            # Use absolute paths in the file list for safety
+            f.write(f"file '{os.path.abspath(m4a_file)}'\n")
+    click.echo(f"  \u2713 Created ffmpeg file list: {file_list_path}")
+
+    # 2. Extract cover art
+    book = epub.read_epub(epub_path)
+    cover_image_path = extract_cover_image(book, output_path.parent)
+
+    # 3. Generate chapter metadata
+    metadata_path = output_path.parent / "ffmpeg_metadata.txt"
+    chapter_files = {}
+    for m4a_file in m4a_files:
+        match = re.match(r"(\d+)_", Path(m4a_file).name)
+        if match:
+            chap_num = int(match.group(1))
+            if chap_num not in chapter_files:
+                chapter_files[chap_num] = []
+            chapter_files[chap_num].append(m4a_file)
+
+    with open(metadata_path, "w") as f:
+        f.write(";FFMETADATA1\n")
+        current_start_time_ms = 0
+        for chap_num in sorted(chapter_files.keys()):
+            if chap_num - 1 < len(chapters):
+                chapter_title = chapters[chap_num - 1][0].replace("_", " ")
+            else:
+                chapter_title = f"Chapter {chap_num}"
+
+            chapter_duration_ms = 0
+            for m4a_file in chapter_files[chap_num]:
+                duration = get_audio_duration(m4a_file)
+                chapter_duration_ms += int(duration * 1000)
+
+            end_time_ms = current_start_time_ms + chapter_duration_ms
+            f.write("[CHAPTER]\n")
+            f.write("TIMEBASE=1/1000\n")
+            f.write(f"START={current_start_time_ms}\n")
+            f.write(f"END={end_time_ms}\n")
+            f.write(f"title={chapter_title}\n")
+            current_start_time_ms = end_time_ms
+    click.echo(f"  \u2713 Created ffmpeg metadata file: {metadata_path}")
+
+    # 4. Run ffmpeg command
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",  # Overwrite output file if it exists
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(file_list_path),
+        "-i",
+        str(metadata_path),
+    ]
+    if cover_image_path:
+        ffmpeg_cmd.extend(["-i", str(cover_image_path)])
+        ffmpeg_cmd.extend(["-map", "0:a", "-map_metadata", "1", "-map", "2:v"])
+        ffmpeg_cmd.extend(["-c:v", "copy", "-disposition:v:0", "attached_pic"])
+    else:
+        ffmpeg_cmd.extend(["-map", "0:a", "-map_metadata", "1"])
+
+    ffmpeg_cmd.extend(["-c:a", "copy", str(output_path)])
+
+    click.echo(f"  Running ffmpeg to merge files...")
+    try:
+        subprocess.run(
+            ffmpeg_cmd,
+            check=True,
+            capture_output=True,
+        )
+        click.echo(f"  \u2713 Successfully merged to {output_path}")
+    except FileNotFoundError:
+        click.echo("Error: ffmpeg is not installed or not found in PATH", err=True)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error during merge: {e.stderr.decode()}", err=True)
+    finally:
+        # 5. Clean up temporary files
+        file_list_path.unlink()
+        metadata_path.unlink()
+        if cover_image_path and cover_image_path.exists():
+            cover_image_path.unlink()
+        click.echo("  \u2713 Cleaned up temporary files.")
+
+
 def convert_wav_to_m4a(wav_path: str, m4a_path: str):
     """Convert a WAV file to M4A format using ffmpeg."""
     try:
@@ -188,7 +373,7 @@ def convert_wav_to_m4a(wav_path: str, m4a_path: str):
             check=True,
             capture_output=True,
         )
-        click.echo(f"  ✓ Converted to M4A: {m4a_path}")
+        click.echo(f"  \u2713 Converted to M4A: {m4a_path}")
     except FileNotFoundError:
         click.echo("Error: ffmpeg is not installed or not found in PATH", err=True)
     except subprocess.CalledProcessError as e:
@@ -203,7 +388,7 @@ def process_chapter(
     client: genai.Client,
     output_dir: Path,
     max_chars: int,
-) -> int:
+) -> Tuple[int, List[str]]:
     """Processes a single chapter, generating and saving audio files."""
     click.echo(f"Processing chapter {chapter_index}/{total_chapters}: {chapter_title}")
 
@@ -211,6 +396,7 @@ def process_chapter(
     click.echo(f"  Split into {len(text_chunks)} chunk(s) for TTS processing")
 
     total_tokens = 0
+    processed_files = []
     for chunk_idx, chunk_text in enumerate(text_chunks):
         part_num = chunk_idx + 1
         if len(text_chunks) > 1:
@@ -223,20 +409,22 @@ def process_chapter(
 
         if m4a_path.exists():
             click.echo(f"  File {m4a_path} already exists, skipping...")
+            processed_files.append(str(m4a_path))
             continue
 
         click.echo(f"  Generating audio for {filename}...")
         speech_result = generate_speech(client, chunk_text)
 
         if not speech_result:
-            click.echo(f"  ✗ Failed to generate audio for {filename}", err=True)
+            click.echo(f"  \u2718 Failed to generate audio for {filename}", err=True)
             continue
 
         audio_data, usage_metadata = speech_result
         wave_file(str(output_path), audio_data)
-        click.echo(f"  ✓ Saved: {output_path}")
+        click.echo(f"  \u2713 Saved: {output_path}")
 
         convert_wav_to_m4a(str(output_path), str(m4a_path))
+        processed_files.append(str(m4a_path))
         output_path.unlink()  # Remove intermediate WAV file
 
         if usage_metadata:
@@ -244,7 +432,7 @@ def process_chapter(
             total_tokens += chunk_tokens
             click.echo(f"  Tokens for audio chunk: {chunk_tokens}")
 
-    return total_tokens
+    return total_tokens, processed_files
 
 
 @click.command()
@@ -286,22 +474,49 @@ def main(epub_path: Path, output_dir: Path, api_key: str, max_chars: int):
     total_chapters = len(chapters)
     click.echo(f"Found {total_chapters} chapters")
 
-    total_tokens_used = 0
-    for i, (chapter_title, chapter_text) in enumerate(chapters, 1):
-        tokens_for_chapter = process_chapter(
-            chapter_index=i,
-            chapter_title=chapter_title,
-            chapter_text=chapter_text,
-            total_chapters=total_chapters,
-            client=client,
-            output_dir=output_dir,
-            max_chars=max_chars,
-        )
-        total_tokens_used += tokens_for_chapter
-        if tokens_for_chapter > 0:
-            click.echo(f"  Total tokens used so far: {total_tokens_used}")
+    print(f"Submitting {total_chapters} chapters to the thread pool...")
 
-    click.echo(f"\nCompleted! Audio files saved to: {output_dir}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        futures = []
+        for i, (chapter_title, chapter_text) in enumerate(chapters, 1):
+            future = executor.submit(
+                process_chapter,  # The function to execute
+                # Arguments for the process_chapter function
+                chapter_index=i,
+                chapter_title=chapter_title,
+                chapter_text=chapter_text,
+                total_chapters=total_chapters,
+                client=client,
+                output_dir=output_dir,
+                max_chars=max_chars,
+            )
+            futures.append(future)
+
+        click.echo("Waiting for chapters to be processed...")
+        total_tokens_used = 0
+        all_m4a_files = []
+        completed_count = 0
+        for future in concurrent.futures.as_completed(futures):
+            completed_count += 1
+            try:
+                tokens_for_chapter, m4a_files_for_chapter = future.result()
+                total_tokens_used += tokens_for_chapter
+                all_m4a_files.extend(m4a_files_for_chapter)
+                click.echo(
+                    f"({completed_count}/{total_chapters}) Chapter processed. Tokens used so far: {total_tokens_used}"
+                )
+            except Exception as exc:
+                click.echo(f"A chapter processing task generated an exception: {exc}")
+
+    all_m4a_files.sort()
+
+    if all_m4a_files:
+        final_m4a_path = output_dir / f"{epub_path.stem}.m4a"
+        merge_audio_files(all_m4a_files, final_m4a_path, epub_path, chapters)
+        click.echo(f"\u2705 Completed! Final audio file saved to: {final_m4a_path}")
+    else:
+        click.echo("No audio files were generated, skipping merge.")
+
     click.echo(f"Total tokens used for the entire book: {total_tokens_used}")
 
 
