@@ -1,0 +1,37 @@
+{
+  "voices": [
+    {
+      "name": "en-ashwath-ganesan",
+      "file": "en-ashwath-ganesan.wav",
+      "gender": "male",
+      "duration_s": 30.0,
+      "sample_rate": 24000,
+      "source": "LibriTTS-R (OpenSLR SLR141, https://www.openslr.org/141/) — Ashwath_Ganesan.wav",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "modifications": "excerpted to a ~30 s mono 24 kHz reference clip and renamed from the original file"
+    },
+    {
+      "name": "en-mark-welch",
+      "file": "en-mark-welch.wav",
+      "gender": "male",
+      "duration_s": 30.0,
+      "sample_rate": 24000,
+      "source": "LibriTTS-R (OpenSLR SLR141, https://www.openslr.org/141/) — Mark_Welch.wav",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "modifications": "excerpted to a ~30 s mono 24 kHz reference clip and renamed from the original file"
+    },
+    {
+      "name": "en-val-grimm",
+      "file": "en-val-grimm.wav",
+      "gender": "female",
+      "duration_s": 30.0,
+      "sample_rate": 24000,
+      "source": "LibriTTS-R (OpenSLR SLR141, https://www.openslr.org/141/) — Val_Grimm.wav",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "modifications": "excerpted to a ~30 s mono 24 kHz reference clip and renamed from the original file"
+    }
+  ]
+}

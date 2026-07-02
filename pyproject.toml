@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "narratelm"
+version = "0.1.0"
+description = "Narrate epub books into chapterized audiobooks locally with VibeVoice"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    "click>=8.1",
+    "lxml>=5.0",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "huggingface_hub>=0.23",
+]
+
+[project.scripts]
+narratelm = "narratelm.cli:main"
+
+[dependency-groups]
+# ML deps are only needed by `narratelm generate`/`probe` (lazy-imported).
+# Linux dev boxes can skip them: `uv sync --no-group ml`.
+ml = [
+    "torch>=2.4",
+    "transformers==4.51.3",
+    "accelerate>=1.0",
+    "vibevoice",
+    # Only needed to load the quantized 7B weights (--model 7b-4bit/7b-8bit).
+    # CUDA/Linux-only: bitsandbytes ships no macOS wheels, and its kernels are
+    # CUDA-only, so Apple Silicon (MPS) uses the unquantized models instead.
+    "bitsandbytes>=0.43; platform_system == 'Linux'",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+[tool.uv]
+default-groups = ["ml", "dev"]
+
+[tool.uv.sources]
+# Community preservation fork of the (removed) upstream TTS inference code.
+# Pinned by exact SHA; verified at this rev: voice cloning (is_prefill) present,
+# per-call voice_samples accepted, demo/inference_from_file.py is the canonical API usage.
+vibevoice = { git = "https://github.com/vibevoice-community/VibeVoice", rev = "07cb79feadd2d3fd7f47530d4c964a12857936a0" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/narratelm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "ffmpeg: tests that shell out to ffmpeg/ffprobe (available in the nix devshell)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

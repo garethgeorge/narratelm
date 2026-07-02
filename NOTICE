@@ -1,0 +1,33 @@
+narratelm — third-party attributions
+=====================================
+
+This project bundles reference voice audio derived from third-party
+datasets. Attributions required by those datasets' licenses are recorded
+below. See src/narratelm/data/voices/voices.json for the per-voice manifest.
+
+-------------------------------------------------------------------------------
+LibriTTS-R
+-------------------------------------------------------------------------------
+
+Bundled voices:
+  - en-ashwath-ganesan.wav  (from LibriVox reader "Ashwath Ganesan")
+  - en-mark-welch.wav       (from LibriVox reader "Mark Welch")
+  - en-val-grimm.wav        (from LibriVox reader "Val Grimm")
+
+Title:    LibriTTS-R: A Restored Multi-Speaker Text-to-Speech Corpus
+Authors:  Yuma Koizumi, Heiga Zen, Shigeki Karita, Yifan Ding, Kohei Yatabe,
+          Nobuyuki Morioka, Michiel Bacchiani, Yu Zhang, Wei Han, Ankur Bapna
+          (Google). Interspeech 2023. arXiv:2305.18802.
+          LibriTTS-R is a sound-quality-restored derivative of LibriTTS
+          (OpenSLR SLR60), itself derived from public-domain LibriVox
+          audiobook recordings and Project Gutenberg texts.
+Source:   OpenSLR SLR141 — https://www.openslr.org/141/
+License:  Creative Commons Attribution 4.0 International (CC BY 4.0)
+          https://creativecommons.org/licenses/by/4.0/
+
+Modifications: Each bundled voice is a single ~30 s, mono, 24 kHz WAV clip
+excerpted from the corresponding LibriTTS-R utterance(s) and renamed to the
+en-<name> convention used by this project. No other processing was applied to
+the audio content. These changes are indicated as required by CC BY 4.0 §3(a).
+
+The LibriTTS-R authors do not endorse this project or its use of the material.
